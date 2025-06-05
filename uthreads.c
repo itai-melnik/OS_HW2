@@ -172,7 +172,7 @@ int uthread_spawn(thread_entry_point entry_point)
 {
 
 
-    //use thread_setup
+   
 
     if (!entry_point || MAX_THREAD_NUM <= num_threads)
     {
@@ -200,6 +200,7 @@ int uthread_spawn(thread_entry_point entry_point)
         return -1;
     }
         
+    setup_thread(availableId, thread_stacks[availableId], entry_point);
 
     threads[availableId].tid = availableId;
     threads[availableId].state = THREAD_READY;
@@ -208,10 +209,8 @@ int uthread_spawn(thread_entry_point entry_point)
     threads[availableId].entry = entry_point;
     num_threads++;
 
-    // get the corresponding stack in the stacks table  ????
-    int thread_stacks[MAX_THREAD_NUM] = 0;
 
-    tq_enqueue(&ready_q, availableId); // check if by reference
+    queue_enqueue(&ready_q, availableId);
 
     unmask_sigvtalrm(&old);
 
@@ -410,7 +409,7 @@ void context_switch(thread_t *current, thread_t *next){
         siglongjmp(next->env, 1);      /* jump to the next thread          */
     }
     /* When we come back here (return value != 0) we are resuming */
-    return 1;
+    return;
 
 
 }
