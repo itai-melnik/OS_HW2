@@ -2,6 +2,31 @@
 #include "thread_queue.h"
 
 
+/* ------------  low–level, arch-specific helpers  ----------------- */
+
+//define a type of address
+typedef unsigned long address_t;
+
+
+# define JB_SP 6
+# define JB_PC 7
+
+
+static address_t translate_address(address_t addr)
+{
+    address_t ret;
+    asm volatile("xor %%fs:0x30, %0\n"
+                 "rol $0x11, %0\n"
+                 : "=g"(ret)
+                 : "0"(addr));
+    return ret;
+}
+
+
+
+
+
+
 
 
 
@@ -9,14 +34,19 @@
 /* global variables                                                */
 /* --------------------------------------------------------------- */
 
-thread_t threads[MAX_THREAD_NUM];
+thread_t threads[MAX_THREAD_NUM]; //TCB table
+static char thread_stacks[MAX_THREAD_NUM][STACK_SIZE]; // 2d array of stacks
+
+
 unsigned long total_quantums = 1;
-int current_tid; //current thread running
 int quantum_usec;
+
+int current_tid; //current thread running
 int available_ids[MAX_THREAD_NUM];
+
 int num_threads = 0;
 int_queue_t ready_q;
-int thread_stacks[MAX_THREAD_NUM][STACK_SIZE]; // 2d array of stacks
+
 
 
 /* --------------------------------------------------------------- */
@@ -43,8 +73,8 @@ static void arm_virtual_timer(void)
     struct itimerval timer;
 
     /* first expiry */
-    timer.it_value.tv_sec  =  quantum_usec / 1000000; // Initial expiration in seconds
-    timer.it_value.tv_usec =  quantum_usec % 1000000; //Initial expiration in microseconds
+    timer.it_value.tv_sec  =  quantum_usec / SECOND; // Initial expiration in seconds
+    timer.it_value.tv_usec =  quantum_usec % SECOND; //Initial expiration in microseconds
 
     /* subsequent expiries (periodic) */
     timer.it_interval = timer.it_value;       /* same length as first quantum */
@@ -178,10 +208,10 @@ int uthread_spawn(thread_entry_point entry_point)
     threads[availableId].entry = entry_point;
     num_threads++;
 
-    // get the corresponding stack in the stacks table
+    // get the corresponding stack in the stacks table  ????
     int thread_stacks[MAX_THREAD_NUM] = 0;
 
-    tq_enqueue(&ready_q, &threads[availableId]); // check if by reference
+    tq_enqueue(&ready_q, availableId); // check if by reference
 
     unmask_sigvtalrm(&old);
 
@@ -293,13 +323,9 @@ int uthread_sleep(int num_quantums){
         return -1;
     }
 
-
+    queue_delete(&ready_q, tid);
     threads[tid].sleep_until += num_quantums; //check logic here 
     
-
-    //while  num_quantums > 0 keep thread blocked if 0 add to ready queue
-    
-
 }
 
 
@@ -313,8 +339,6 @@ int uthread_get_tid(){
             return i;
         }
     }
-
-    // retrun current_tid
 
     return 0;
     
@@ -331,10 +355,11 @@ int uthread_get_total_quantums(){
 
 int uthread_get_quantums(int tid){
 
+    //do i need to sigmask here?
 
-    ///
-
-
+    tid = uthread_get_tid();
+    return threads[tid].quantums;
+    
 
 
 }
@@ -347,8 +372,29 @@ int uthread_get_quantums(int tid){
 
 
 void schedule_next(void){
-    int tid;
-    queue_dequeue(&ready_q, &tid);
+
+    /* Called either from timer_handler (preemption) or when the *
+     * currently running thread blocks/terminates.    
+     
+     *
+     * 1) Move current RUNNING thread to READY if it can run.     */
+
+    int prev = current_tid;
+    if (threads[prev].state== THREAD_RUNNING)
+    {
+        threads[prev].state = THREAD_READY;
+        queue_enqueue(&ready_q, prev);
+    }
+
+
+    /* 2) Pick next READY thread                                  */
+    int next;
+    queue_dequeue(&ready_q, &next);
+    threads[next].state = THREAD_RUNNING;
+
+
+    /* 3) Context-switch                                          */
+    context_switch(&threads[prev], &threads[next]);
 
 
 
@@ -357,6 +403,14 @@ void schedule_next(void){
 
 void context_switch(thread_t *current, thread_t *next){
 
+    /* Save current state; sigsetjmp() returns 0 the first time   */
+    if (sigsetjmp(current->env, 1) == 0)
+    {
+        current_tid = next->tid;          /* globally record the new RUNNING */
+        siglongjmp(next->env, 1);      /* jump to the next thread          */
+    }
+    /* When we come back here (return value != 0) we are resuming */
+    return 1;
 
 
 }
@@ -365,13 +419,34 @@ void context_switch(thread_t *current, thread_t *next){
 
 void timer_handler(int signum){
 
-    total_quantums += 1; 
+     /* Update quantum counters                                     */
+    ++total_quantums;
+    ++threads[current_tid].quantums;
+
+
+    //handle sleeping threads
+
+    for (int i = 0; i < MAX_THREAD_NUM; ++i)
+    {
+        if (threads[i].state == THREAD_BLOCKED &&
+            threads[i].sleep_until != 0 &&
+            threads[i].sleep_until <= total_quantums)
+        {
+            /* Sleep finished -> READY                              */
+            threads[i].sleep_until = 0;
+            threads[i].state = THREAD_READY;
+            queue_enqueue(&ready_q, i);
+        }
+    }
+
 
     //scheduling decision
 
     //either move to end of READY queue
 
     //schedule next 
+    schedule_next();
+    return;
 
 
 
@@ -380,6 +455,20 @@ void timer_handler(int signum){
 
 
 void setup_thread(int tid, char *stack, thread_entry_point entry_point){
+
+
+    //Save a clean context                                 
+    sigsetjmp(threads[tid].env, 1);
+
+    //Wire the new stack & PC into that context 
+    address_t sp = (address_t)stack + STACK_SIZE - sizeof(address_t);
+    address_t pc = (address_t)entry_point;
+
+    threads[tid].env->__jmpbuf[JB_SP] = translate_address(sp);
+    threads[tid].env->__jmpbuf[JB_PC] = translate_address(pc);
+
+    //The signal mask inside env must start empty  
+    sigemptyset(&threads[tid].env->__saved_mask);
 
 
 

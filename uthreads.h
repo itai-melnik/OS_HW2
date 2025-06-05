@@ -20,6 +20,7 @@
 
 /** Stack size per thread (in bytes). */
 #define STACK_SIZE 4096
+# define SECOND 1000000 
 
 /**
  * @brief Function pointer type for a thread's entry point.
