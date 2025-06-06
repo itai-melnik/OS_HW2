@@ -354,6 +354,9 @@ int uthread_resume(int tid){
         return 0;
     }
 
+    /*only resume blocked threads that have sleep_until = 0 
+    we cant resume a sleeping thread as it is still blocked*/
+
     if (threads[tid].state == THREAD_BLOCKED && threads[tid].sleep_until == 0) {
         threads[tid].state = THREAD_READY;
         queue_enqueue(&ready_q, tid);
@@ -435,7 +438,10 @@ void schedule_next(void){
      *
      * 1) Move current RUNNING thread to READY if it can run.     */
 
+    sigset_t old;
+    mask_sigvtalrm(&old);
     int prev = current_tid;
+
     if (threads[prev].state == THREAD_RUNNING)
     {
         threads[prev].state = THREAD_READY;
@@ -443,14 +449,26 @@ void schedule_next(void){
     }
 
 
-    /* 2) Pick next READY thread                                  */
+    if (queue_is_empty(&ready_q)) {
+        //no other READY threads just keep running prev
+        unmask_sigvtalrm(&old);
+        return;
+    }
+
+
+    /* Pick next READY thread  */                           
     int next;
     queue_dequeue(&ready_q, &next);
     threads[next].state = THREAD_RUNNING;
 
 
-    /* 3) Context-switch                                          */
+    /* Context-switch
+    SIGVTALRM is blocked for the switch
+    new thread resumes with same mask and timer re-enabled */                                       
     context_switch(&threads[prev], &threads[next]);
+
+    //get here only when the prev thread is rescheduled 
+    unmask_sigvtalrm(&old);
 
 
 
