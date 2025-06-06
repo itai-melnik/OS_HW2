@@ -179,10 +179,6 @@ int uthread_init(int quantum_usecs)
 
 int uthread_spawn(thread_entry_point entry_point)
 {
-
-
-   
-
     if (!entry_point || MAX_THREAD_NUM <= num_threads)
     {
         return -1;
@@ -218,12 +214,11 @@ int uthread_spawn(thread_entry_point entry_point)
     threads[availableId].entry = entry_point;
     num_threads++;
 
-
     queue_enqueue(&ready_q, availableId);
 
     unmask_sigvtalrm(&old);
 
-    return 0;
+    return availableId;
 }
 
 int uthread_terminate(int tid)
@@ -313,35 +308,44 @@ int uthread_terminate(int tid)
 }
 
 
+
+
 int uthread_block(int tid) {
-    if (!available_ids[tid]  || tid==0)
-    {
-        return -1;
-    }
+
+    /*main thread can't be blocked */
+    if (!available_ids[tid]  || tid==0) return -1;
+    
 
     sigset_t old;
     mask_sigvtalrm(&old);
-    if(threads[tid].state == THREAD_READY){
-        queue_delete(&ready_q, tid);
+
+    //currently running thread blocking itself
+    if(current_tid == tid){
+        threads[current_tid].state = THREAD_BLOCKED;
+        schedule_next();
+
+        
     }
+    else{
+    //running thread blocking another thread
+    if(threads[tid].state == THREAD_READY)queue_delete(&ready_q, tid);
+
     threads[tid].state = THREAD_BLOCKED;
+    }
+  
 
     unmask_sigvtalrm(&old);
-
     return 0;
 }
 
 
 int uthread_resume(int tid){
-    if (!available_ids[tid])
-    {
-        return -1;
-    }
 
+    if (!available_ids[tid]) return -1;
+    
 
     sigset_t old;
     mask_sigvtalrm(&old);
-
 
 
     ///TODO: fix this
@@ -366,9 +370,7 @@ int uthread_sleep(int num_quantums){
     int tid = uthread_get_tid();
 
     //main thread cant sleep
-    if(tid == 0){
-        return -1;
-    }
+    if(tid == 0) return -1;
 
     queue_delete(&ready_q, tid);
 
@@ -434,7 +436,7 @@ void schedule_next(void){
      * 1) Move current RUNNING thread to READY if it can run.     */
 
     int prev = current_tid;
-    if (threads[prev].state== THREAD_RUNNING)
+    if (threads[prev].state == THREAD_RUNNING)
     {
         threads[prev].state = THREAD_READY;
         queue_enqueue(&ready_q, prev);
@@ -473,12 +475,19 @@ void context_switch(thread_t *current, thread_t *next){
 
 void timer_handler(int signum){
 
-     /* Update quantum counters                                     */
+     /* Update quantum counters
+     
+     global counters so need to mask*/                       
+
+    sigset_t old;
+    mask_sigvtalrm(&old);
     ++total_quantums;
     ++threads[current_tid].quantums;
 
 
     //handle sleeping threads
+
+    //scheduling decision either move to end of READY queue
 
     for (int i = 0; i < MAX_THREAD_NUM; ++i)
     {
@@ -486,17 +495,15 @@ void timer_handler(int signum){
             threads[i].sleep_until != 0 &&
             threads[i].sleep_until <= total_quantums)
         {
-            /* Sleep finished -> READY                              */
+            /* Sleep finished -> READY*/                        
             threads[i].sleep_until = 0;
             threads[i].state = THREAD_READY;
             queue_enqueue(&ready_q, i);
         }
     }
 
+    unmask_sigvtalrm(&old);
 
-    //scheduling decision
-
-    //either move to end of READY queue
 
     //schedule next 
     schedule_next();
@@ -512,17 +519,22 @@ void setup_thread(int tid, char *stack, thread_entry_point entry_point){
 
 
     //Save a clean context                                 
-    sigsetjmp(threads[tid].env, 1);
+    if (sigsetjmp(threads[tid].env, 1) == 0){
 
     //Wire the new stack & PC into that context 
     address_t sp = (address_t)stack + STACK_SIZE - sizeof(address_t);
     address_t pc = (address_t)entry_point;
 
+    //check this
     threads[tid].env->__jmpbuf[JB_SP] = translate_address(sp);
     threads[tid].env->__jmpbuf[JB_PC] = translate_address(pc);
 
     //The signal mask inside env must start empty  
     sigemptyset(&threads[tid].env->__saved_mask);
+    }
+    else{
+        //error
+    }
 
 }
 
