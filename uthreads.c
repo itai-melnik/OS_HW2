@@ -42,7 +42,7 @@ unsigned long total_quantums = 1;
 int quantum_usec;
 
 int current_tid; //current thread running
-int available_ids[MAX_THREAD_NUM];
+static int available_ids[MAX_THREAD_NUM] = {0};
 
 int num_threads = 0;
 int_queue_t ready_q;
@@ -139,11 +139,20 @@ int uthread_init(int quantum_usecs)
         }
     }
 
+    memset(threads, 0, sizeof threads);
+
     if (availableId == -1)
         return -1;
 
+
+
+    memset(threads, 0, sizeof threads);
+    memset(thread_stacks, 0, sizeof thread_stacks);
     // initialize q
     queue_init(&ready_q);
+
+    num_threads = 0;
+    total_quantums = 1;
 
     threads[availableId].tid = availableId;
     threads[availableId].state = THREAD_RUNNING;
@@ -204,7 +213,7 @@ int uthread_spawn(thread_entry_point entry_point)
 
     threads[availableId].tid = availableId;
     threads[availableId].state = THREAD_READY;
-    threads[availableId].quantums = 0; //??? think its 0 because it is in ready not running
+    threads[availableId].quantums = 0;
     threads[availableId].sleep_until = 0;
     threads[availableId].entry = entry_point;
     num_threads++;
@@ -220,56 +229,90 @@ int uthread_spawn(thread_entry_point entry_point)
 int uthread_terminate(int tid)
 {
 
-    // tid does not exist
-    if (!available_ids[tid])
-    {
-        return -1;
-    }
+    //input validation
+    if (tid < 0 || tid >= MAX_THREAD_NUM || !available_ids[tid])
+    return -1;
+   
 
 
     sigset_t old;
     mask_sigvtalrm(&old);
 
+    // if tid is 0 we need to terminate everything
 
     if (tid == 0) {
-        // if tid is 0 we need to terminate everything
 
-        int ctid = 0; // the tid we are going to retrieve from the q
-        while (!queue_is_empty(&ready_q))
+        for (size_t i = 1; i < MAX_THREAD_NUM; i++)
         {
-            queue_dequeue(&ready_q, &ctid);
-            available_ids[ctid] = 0;
-            threads[ctid].tid = 0;
-            threads[ctid].state = THREAD_TERMINATED;
-            threads[ctid].quantums = 0; //??? think its 0 because it is in ready not running
-            threads[ctid].sleep_until = 0;
-            threads[ctid].entry = NULL;
-            num_threads--;
-            memset(thread_stacks[ctid], 0, sizeof thread_stacks[ctid]);
+            if (available_ids[i]) {
+                //remove from queue if it is in ready state
+                if(threads[i].state == THREAD_READY) queue_delete(&ready_q, i);
+            
+                available_ids[i] = 0;
+                threads[i].state = THREAD_TERMINATED;
+                num_threads--;
+            
+                threads[i].entry = NULL;
+            
+                // get the corresponding stack in the stacks table and zero it
+                memset(thread_stacks[i], 0, sizeof thread_stacks[i]);
+            }
+            
         }
+
+
+        // Clear the ready queue
+        while (!queue_is_empty(&ready_q)) {
+            int tmp;
+            queue_dequeue(&ready_q, &tmp);
+        }
+
+        
+        unmask_sigvtalrm(&old);
+        exit(0); 
     } 
-    else {
+
+
+    //the running thread terminates itself
+    if(tid == current_tid){
 
         available_ids[tid] = 0;
-        threads[tid].tid = 0;
         threads[tid].state = THREAD_TERMINATED;
-        threads[tid].quantums = 0; //??? think its 0 because it is in ready not running
-        threads[tid].sleep_until = 0;
-        threads[tid].entry = NULL;
         num_threads--;
+        unmask_sigvtalrm(&old);
+        
+        //if no more running threads
+        if (num_threads == 0) { exit(0); }
+        
+        schedule_next();   //never returns
 
-        // get the corresponding stack in the stacks table
-        memset(thread_stacks[tid], 0, sizeof thread_stacks[tid]);
-   
     }
 
-    // delete the process from the queue
-    queue_delete(&ready_q, tid);
+
+
+    
+    /*if thread getting terminated is not the calling thread or the main thread
+    it is a thread in READY / BLOCKED / SLEEPING state */
+
+    //remove from queue if it is in ready state
+    if(threads[tid].state == THREAD_READY) queue_delete(&ready_q, tid);
+
+        available_ids[tid] = 0;
+        threads[tid].state = THREAD_TERMINATED;
+        num_threads--;
+       
+        threads[tid].entry = NULL;
+       
+        // get the corresponding stack in the stacks table and zero it
+        memset(thread_stacks[tid], 0, sizeof thread_stacks[tid]);
+
 
     unmask_sigvtalrm(&old);
 
     return 0;
 }
+
+
 int uthread_block(int tid) {
     if (!available_ids[tid]  || tid==0)
     {
@@ -300,12 +343,17 @@ int uthread_resume(int tid){
     mask_sigvtalrm(&old);
 
 
+
     ///TODO: fix this
     if(threads[tid].state == THREAD_READY ||threads[tid].state == THREAD_RUNNING){
         unmask_sigvtalrm(&old);
         return 0;
     }
-    threads[tid].state = THREAD_READY;
+
+    if (threads[tid].state == THREAD_BLOCKED && threads[tid].sleep_until == 0) {
+        threads[tid].state = THREAD_READY;
+        queue_enqueue(&ready_q, tid);
+    }
 
     unmask_sigvtalrm(&old);
     return 0;
@@ -323,7 +371,14 @@ int uthread_sleep(int num_quantums){
     }
 
     queue_delete(&ready_q, tid);
-    threads[tid].sleep_until += num_quantums; //check logic here 
+
+    //block the thread
+    threads[tid].state = THREAD_BLOCKED;
+
+    //make it sleep until total quantums reaches a certain number
+    threads[tid].sleep_until = total_quantums + num_quantums;
+
+    return 0;
     
 }
 
@@ -332,6 +387,9 @@ int uthread_sleep(int num_quantums){
 
 int uthread_get_tid(){
 
+    if (threads[current_tid].tid == current_tid) return current_tid;
+
+    
     for (size_t i = 0; i < MAX_THREAD_NUM; i++)
     {
         if(threads[i].state == THREAD_RUNNING){
@@ -354,9 +412,6 @@ int uthread_get_total_quantums(){
 
 int uthread_get_quantums(int tid){
 
-    //do i need to sigmask here?
-
-    tid = uthread_get_tid();
     return threads[tid].quantums;
     
 
@@ -468,8 +523,6 @@ void setup_thread(int tid, char *stack, thread_entry_point entry_point){
 
     //The signal mask inside env must start empty  
     sigemptyset(&threads[tid].env->__saved_mask);
-
-
 
 }
 
