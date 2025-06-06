@@ -15,7 +15,7 @@ typedef unsigned long address_t;
 static address_t translate_address(address_t addr)
 {
     address_t ret;
-    asm volatile("xor %%fs:0x30, %0\n"
+    __asm__ volatile ("xor %%fs:0x30, %0\n"
                  "rol $0x11, %0\n"
                  : "=g"(ret)
                  : "0"(addr));
@@ -28,21 +28,25 @@ static address_t translate_address(address_t addr)
 
 
 
-
-
 /* --------------------------------------------------------------- */
 /* global variables                                                */
 /* --------------------------------------------------------------- */
 
+
 thread_t threads[MAX_THREAD_NUM]; //TCB table
-static char thread_stacks[MAX_THREAD_NUM][STACK_SIZE]; // 2d array of stacks
+
+/* Each per-thread stack must start at a 16‑byte aligned address to satisfy the
+ * System‑V x86‑64 ABI (required for `call`/`ret`).  Declare a typedef that
+ * forces that alignment, then create the 2‑D array of stacks with that type.  */
+typedef char thread_stack_t[STACK_SIZE] __attribute__((aligned(16)));
+static thread_stack_t thread_stacks[MAX_THREAD_NUM];
 
 
 unsigned long total_quantums = 1;
 int quantum_usec;
 
 int current_tid; //current thread running
-static int available_ids[MAX_THREAD_NUM] = {0};
+static int available_ids[MAX_THREAD_NUM];
 
 int num_threads = 0;
 int_queue_t ready_q;
@@ -178,11 +182,15 @@ int uthread_init(int quantum_usecs)
 
 int uthread_spawn(thread_entry_point entry_point)
 {
+
+    sigset_t old;
+    mask_sigvtalrm(&old);
+
     if (!entry_point || MAX_THREAD_NUM <= num_threads) return -1;
     
-    sigset_t old;
+ 
 
-    mask_sigvtalrm(&old);
+    
 
     int availableId = -1;
     for (int i = 0; i < MAX_THREAD_NUM; i++)
@@ -201,15 +209,16 @@ int uthread_spawn(thread_entry_point entry_point)
     }
         
    
+    setup_thread(availableId, thread_stacks[availableId], entry_point);
 
     threads[availableId].tid = availableId;
     threads[availableId].state = THREAD_READY;
     threads[availableId].quantums = 0;
     threads[availableId].sleep_until = 0;
     threads[availableId].entry = entry_point;
-    num_threads++;
+    ++num_threads;
 
-    setup_thread(availableId, thread_stacks[availableId], entry_point);
+    
 
     queue_enqueue(&ready_q, availableId);
 
@@ -374,13 +383,11 @@ int uthread_sleep(int num_quantums){
     sigset_t old;
     mask_sigvtalrm(&old);
 
-    threads[current_tid].sleep_until = total_quantums + num_quantums;
+    threads[current_tid].sleep_until = total_quantums + num_quantums + 1;
 
 
-    //block the thread
-    uthread_block(current_tid);
+    
 
-    unmask_sigvtalrm(&old);
 
     //make it sleep until total quantums reaches a certain number
     
@@ -388,9 +395,11 @@ int uthread_sleep(int num_quantums){
 
     // /* context-switch to the next READY thread
     // The call never returns until this thread is awakened by timer_handler()*/
-    // schedule_next();                    /* keeps SIGVTALRM blocked */
+    schedule_next();                    /* keeps SIGVTALRM blocked */
    
     // //resume here only after sleep expires
+
+    unmask_sigvtalrm(&old);
   
 
     return 0;
@@ -402,7 +411,6 @@ int uthread_sleep(int num_quantums){
 
 int uthread_get_tid(){
 
-    if (threads[current_tid].tid == current_tid) 
     return current_tid;
 }
 
@@ -488,11 +496,12 @@ void schedule_next(void){
 void context_switch(thread_t *current, thread_t *next){
 
     /* Save current state; sigsetjmp() returns 0 the first time   */
-   
+    
     if (sigsetjmp(current->env, 1) == 0)
     {
-      
-        current_tid = next->tid;          /* globally record the new RUNNING */
+        
+        current_tid = next->tid;  
+        printf("curr: %d\n", threads[current_tid].quantums);        /* globally record the new RUNNING */
         siglongjmp(next->env, 1);      /* jump to the next thread          */
     }
     /* When we come back here (return value != 0) we are resuming */
@@ -504,7 +513,6 @@ void context_switch(thread_t *current, thread_t *next){
 void timer_handler(int signum){
 
      /* Update quantum counters*/                       
-  
     ++total_quantums;
     ++threads[current_tid].quantums;
 
@@ -534,28 +542,42 @@ void timer_handler(int signum){
 }
 
 
+static void thread_launcher(void)
+{
+    thread_entry_point fn = threads[current_tid].entry;
+    fn();                               /* run user code               */
+    uthread_terminate(current_tid);     /* clean exit, never returns   */
+    abort();                            /* defensive – should not run  */
+}
+
+
+
 
 void setup_thread(int tid, char *stack, thread_entry_point entry_point){
 
 
-    //Save a clean context                                 
+    //Save a clean context     
     if (sigsetjmp(threads[tid].env, 1) == 0){
 
     //Wire the new stack & PC into that context 
-    address_t sp = (address_t)stack + STACK_SIZE - sizeof(address_t);
-    address_t pc = (address_t)entry_point;
+   // address_t sp = (address_t)stack + STACK_SIZE - sizeof(address_t);
+
+    // address_t sp = (address_t)stack + STACK_SIZE;
+    // sp &= ~0xF;                     /* align down to 16            */
+    // sp -= sizeof(address_t);
+    // *((address_t *)sp) = 0;         /* dummy RET target */
+
+    address_t sp = (address_t) stack + STACK_SIZE - sizeof(address_t);
+    address_t pc = (address_t) entry_point;
 
     //check this
     threads[tid].env->__jmpbuf[JB_SP] = translate_address(sp);
-    threads[tid].env->__jmpbuf[JB_PC] = translate_address(pc);
+    threads[tid].env->__jmpbuf[JB_PC] = translate_address((address_t)thread_launcher);
 
     //The signal mask inside env must start empty  
     sigemptyset(&threads[tid].env->__saved_mask);
     }
-    else{
-        //error
-    }
-
+    
 }
 
 
