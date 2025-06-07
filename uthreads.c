@@ -502,10 +502,10 @@ void schedule_next(void){
     new thread resumes with same mask and timer re-enabled */ 
 
 
-     //get here only when the prev thread is rescheduled 
-    unmask_sigvtalrm(&old);  //TODO: check order of this
-
+    
     context_switch(&threads[prev], &threads[next]);
+    //get here only when the prev thread is rescheduled 
+    unmask_sigvtalrm(&old);  //TODO: check order of this
     
    
     
