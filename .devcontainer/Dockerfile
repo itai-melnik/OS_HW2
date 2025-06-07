@@ -8,8 +8,10 @@ RUN apt update && apt install -y software-properties-common \
     && add-apt-repository ppa:ubuntu-toolchain-r/test -y \
     && apt update && apt install -y \
     gcc-13 g++-13 \
+    make gdb gdbserver llvm git curl vim \
     make gdb llvm git curl vim \
     && rm -rf /var/lib/apt/lists/*
+    
 
 # Set gcc-13 as default
 RUN update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-13 100 \

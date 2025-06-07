@@ -1,6 +1,6 @@
 #ifndef _UTHREADS_H
 #define _UTHREADS_H
-#define _POSIX_C_SOURCE 200809L //
+#define _POSIX_C_SOURCE 200809L 
 
 #include <stdlib.h>
 #include <signal.h>
