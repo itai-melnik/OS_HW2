@@ -33,20 +33,19 @@ static address_t translate_address(address_t addr)
 /* --------------------------------------------------------------- */
 
 
-thread_t threads[MAX_THREAD_NUM]; //TCB table
 
 /* Each per-thread stack must start at a 16‑byte aligned address to satisfy the
  * System‑V x86‑64 ABI (required for `call`/`ret`).  Declare a typedef that
  * forces that alignment, then create the 2‑D array of stacks with that type.  */
-typedef char thread_stack_t[STACK_SIZE] __attribute__((aligned(16)));
-static thread_stack_t thread_stacks[MAX_THREAD_NUM];
+static thread_t threads[MAX_THREAD_NUM]; //TCB table
+static char __attribute__((aligned(0x10))) thread_stacks[MAX_THREAD_NUM][STACK_SIZE];
 
 
 unsigned long total_quantums = 1;
 int quantum_usec;
 
 int current_tid; //current thread running
-static int available_ids[MAX_THREAD_NUM];
+//static int available_ids[MAX_THREAD_NUM];
 
 int num_threads = 0;
 int_queue_t ready_q;
@@ -143,24 +142,29 @@ int uthread_init(int quantum_usecs)
     }
 
     /* Mark main thread (tid == 0) as allocated --------------------------- */
-    memset(available_ids, 0, sizeof available_ids);
-    available_ids[0] = 1;
+    // memset(available_ids, 0, sizeof available_ids);
+    // available_ids[0] = 1;
 
     /* Clear per‑thread tables ------------------------------------------- */
     memset(threads, 0, sizeof threads);
-    memset(thread_stacks, 0, sizeof thread_stacks);
+    for (int i = 1; i < MAX_THREAD_NUM; ++i) {
+        memset(thread_stacks[i], 0, STACK_SIZE);
+        threads[i].state = THREAD_UNUSED;
+    }
+   
 
     /* Ready‑queue initialisation ---------------------------------------- */
     queue_init(&ready_q);
 
-    /* Capture current context for the main thread ----------------------- */
+    /* Capture current context for the main thread as‑is */
     sigsetjmp(threads[0].env, 1);
     sigemptyset(&(threads[0].env)->__saved_mask);
+     
 
     /* Fill‑in TCB for main thread --------------------------------------- */
     threads[0].tid = 0;
     threads[0].state = THREAD_RUNNING;
-    threads[0].quantums = 1;
+    threads[0].quantums = 0;
     threads[0].sleep_until = 0;
 
     current_tid = 0;
@@ -188,16 +192,16 @@ int uthread_spawn(thread_entry_point entry_point)
     mask_sigvtalrm(&old);
 
     if (!entry_point || MAX_THREAD_NUM <= num_threads) return -1;
-    
+        
+
     int availableId = -1;
-    for (int i = 0; i < MAX_THREAD_NUM; i++)
-    {
-        if (!available_ids[i])
-        {
-            availableId = i;
-            available_ids[i] = 1;
-            break;
+    for (int i = 1; i < MAX_THREAD_NUM; i++) {
+        if (threads[i].state == THREAD_UNUSED ||
+            threads[i].state == THREAD_TERMINATED) {
+        availableId = i;
+        break;
         }
+
     }
 
     if (availableId == -1){
@@ -226,7 +230,7 @@ int uthread_terminate(int tid)
 {
 
     //input validation
-    if (tid < 0 || tid >= MAX_THREAD_NUM || !available_ids[tid])
+    if (tid < 0 || tid >= MAX_THREAD_NUM || threads[tid].state == THREAD_UNUSED || threads[tid].state == THREAD_TERMINATED)
     return -1;
    
 
@@ -240,11 +244,10 @@ int uthread_terminate(int tid)
 
         for (size_t i = 1; i < MAX_THREAD_NUM; i++)
         {
-            if (available_ids[i]) {
+            if (threads[tid].state != THREAD_UNUSED) {
                 //remove from queue if it is in ready state
                 if(threads[i].state == THREAD_READY) queue_delete(&ready_q, i);
             
-                available_ids[i] = 0;
                 threads[i].state = THREAD_TERMINATED;
                 num_threads--;
             
@@ -272,7 +275,6 @@ int uthread_terminate(int tid)
     //the running thread terminates itself
     if(tid == current_tid){
 
-        available_ids[tid] = 0;
         threads[tid].state = THREAD_TERMINATED;
         num_threads--;
         unmask_sigvtalrm(&old);
@@ -293,7 +295,6 @@ int uthread_terminate(int tid)
     //remove from queue if it is in ready state
     if(threads[tid].state == THREAD_READY) queue_delete(&ready_q, tid);
 
-        available_ids[tid] = 0;
         threads[tid].state = THREAD_TERMINATED;
         num_threads--;
        
@@ -314,7 +315,7 @@ int uthread_terminate(int tid)
 int uthread_block(int tid) {
 
     /*main thread can't be blocked */
-    if (!available_ids[tid]  || tid==0) return -1;
+    if (threads[tid].state == THREAD_UNUSED || tid==0) return -1;
     
 
     sigset_t old;
@@ -342,11 +343,13 @@ int uthread_block(int tid) {
 
 int uthread_resume(int tid){
 
-    if (!available_ids[tid]) return -1;
-    
-
     sigset_t old;
     mask_sigvtalrm(&old);
+
+
+    if (threads[tid].state == THREAD_UNUSED ||
+      threads[tid].state == THREAD_TERMINATED) return -1;
+    
 
 
     if(threads[tid].state == THREAD_READY ||threads[tid].state == THREAD_RUNNING){
@@ -370,28 +373,26 @@ int uthread_resume(int tid){
 
 int uthread_sleep(int num_quantums){
 
-    
-    //main thread cant sleep
-    if (current_tid == 0 || num_quantums <= 0) return -1;
-   
-
     sigset_t old;
     mask_sigvtalrm(&old);
 
 
+    //main thread cant sleep
+    if (current_tid == 0 || num_quantums <= 0) return -1;
+   
+
     //make it sleep until total quantums reaches a certain number
-    threads[current_tid].sleep_until = total_quantums + num_quantums + 1;
+    threads[current_tid].sleep_until = total_quantums + num_quantums;
 
     threads[current_tid].state = THREAD_BLOCKED;
     // /* context-switch to the next READY thread
     // The call never returns until this thread is awakened by timer_handler()*/
+   
+    unmask_sigvtalrm(&old);
     schedule_next();                    /* keeps SIGVTALRM blocked */
    
     // //resume here only after sleep expires
-    printf("got to here");
-    unmask_sigvtalrm(&old);
-  
-
+    
     return 0;
     
 }
@@ -434,14 +435,39 @@ void schedule_next(void){
      * currently running thread blocks/terminates.    
      
      *
-     * 1) Move current RUNNING thread to READY if it can run.     */
+     * Move current RUNNING thread to READY if it can run.     */
 
     sigset_t old;
     mask_sigvtalrm(&old);
     int prev = current_tid;
 
 
-    if (threads[prev].state == THREAD_RUNNING)
+    /* Update quantum counters*/                       
+    ++total_quantums;
+
+    if (current_tid >= 0 && threads[current_tid].state != THREAD_TERMINATED) {
+        ++threads[current_tid].quantums;
+    }
+
+
+
+    //handle sleeping threads
+    for (int i = 0; i < MAX_THREAD_NUM; ++i) {
+        if (threads[i].state == THREAD_BLOCKED &&
+            threads[i].sleep_until > 0 &&
+            threads[i].sleep_until <= total_quantums) {
+            /* Sleep finished => READY*/                        
+            threads[i].sleep_until = 0;
+            threads[i].state = THREAD_READY;
+            queue_enqueue(&ready_q, i);
+        }
+    }
+
+    
+
+
+    if (threads[prev].state == THREAD_RUNNING && 
+        threads[prev].state != THREAD_TERMINATED)
     {
         threads[prev].state = THREAD_READY;
         queue_enqueue(&ready_q, prev);
@@ -465,13 +491,16 @@ void schedule_next(void){
 
     /* Context-switch
     SIGVTALRM is blocked for the switch
-    new thread resumes with same mask and timer re-enabled */    
-                                      
+    new thread resumes with same mask and timer re-enabled */ 
+
+    //get here only when the prev thread is rescheduled 
+    unmask_sigvtalrm(&old);  //TODO: check order of this
+
     context_switch(&threads[prev], &threads[next]);
     
 
-    //get here only when the prev thread is rescheduled 
-    unmask_sigvtalrm(&old);
+    
+    
     return;
 
 
@@ -482,13 +511,15 @@ void schedule_next(void){
 void context_switch(thread_t *current, thread_t *next){
 
     /* Save current state; sigsetjmp() returns 0 the first time   */
-    
-    if (sigsetjmp(current->env, 1) == 0)
-    {
-        
+    int retval = sigsetjmp(current->env, 1);
+
+    if (retval != 0){
+        return;
+    }
+
         current_tid = next->tid;       /* globally record the new RUNNING */
         siglongjmp(next->env, 1);      /* jump to the next thread          */
-    }
+    
     /* When we come back here (return value != 0) we are resuming */
 
 }
@@ -496,24 +527,6 @@ void context_switch(thread_t *current, thread_t *next){
 
 
 void timer_handler(int signum){
-    /* Update quantum counters*/                       
-    ++total_quantums;
-    if (threads[current_tid].state == THREAD_RUNNING) {
-        ++threads[current_tid].quantums;
-    }
-
-    //handle sleeping threads
-    for (int i = 0; i < MAX_THREAD_NUM; ++i) {
-        if (threads[i].state == THREAD_BLOCKED &&
-            threads[i].sleep_until != 0 &&
-            threads[i].sleep_until <= total_quantums) {
-            /* Sleep finished => READY*/                        
-            threads[i].sleep_until = 0;
-            threads[i].state = THREAD_READY;
-            queue_enqueue(&ready_q, i);
-        }
-    }
-
     //schedule next 
     schedule_next();
 }
@@ -528,8 +541,6 @@ static void thread_launcher(void)
 }
 
 
-
-
 void setup_thread(int tid, char *stack, thread_entry_point entry_point){
     //Save a clean context     
     if (sigsetjmp(threads[tid].env, 1) == 0){
@@ -539,10 +550,13 @@ void setup_thread(int tid, char *stack, thread_entry_point entry_point){
         sp &= ~0xF;
         // Reserve space for the return address and align stack
         sp -= sizeof(address_t);
+        *((address_t *)sp) = (address_t)abort; /* defensive return addr */
+         /* Start execution in the launcher, not the user fn */
+        address_t pc = (address_t)thread_launcher;
+
         // Store the return address (thread_launcher)
-        *((address_t *)sp) = (address_t) thread_launcher;
+        // *((address_t *)sp) = (address_t) thread_launcher;
         // Set up the program counter to point to the entry point
-        address_t pc = (address_t) entry_point;
 
         // Set the stack pointer and program counter in the jump buffer
         (threads[tid].env->__jmpbuf)[JB_SP] = translate_address(sp);
