@@ -107,7 +107,7 @@ int main(void) {
             uthread_terminate(tid1);
             uthread_terminate(tid2);
             uthread_terminate(tid3);
-            //uthread_terminate(tid4);
+            uthread_terminate(tid4);
             printf("[Main Thread] Shutdown succeeded\n");
             printf("[Main Thread] Terminting Main Thread\n");
             uthread_terminate(0);
