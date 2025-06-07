@@ -495,7 +495,6 @@ void schedule_next(void){
     threads[next].state = THREAD_RUNNING;
 
     current_tid = next;
-    printf("DEBUG: Switching to thread %d\n", next);
 
     /* Context-switch
     SIGVTALRM is blocked for the switch
@@ -525,7 +524,6 @@ void context_switch(thread_t *current, thread_t *next){
     if (retval != 0){
         return;
     }
-        printf("DEBUG: before long jump\n");      /* globally record the new RUNNING */
         siglongjmp(next->env, 1);      /* jump to the next thread          */
     
     /* When we come back here (return value != 0) we are resuming */
@@ -535,7 +533,6 @@ void context_switch(thread_t *current, thread_t *next){
 
 
 void timer_handler(int signum){
-    printf("DEBUG: Timer interrupt received\n");
     //schedule next 
     schedule_next();
 }
