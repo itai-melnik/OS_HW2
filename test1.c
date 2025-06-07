@@ -29,7 +29,7 @@ void f()
     int tid = uthread_get_tid();
     for(int i = 0; i < 100; i++)
     {
-        printf("Thread %d: %d\n", tid, i);
+        //printf("Thread %d: %d\n", tid, i);
         int x = 0;
         userland_sleep(200);
     }
