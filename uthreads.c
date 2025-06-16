@@ -1,4 +1,3 @@
-//code number 1
 #include "uthreads.h"
 #include "thread_queue.h"
 
@@ -12,6 +11,7 @@ typedef unsigned long address_t;
 
 # define JB_SP 6
 # define JB_PC 7
+# define SECOND 1000000
 
 
 static address_t translate_address(address_t addr)
@@ -63,9 +63,9 @@ static void install_timer_handler(void)
     sa.sa_flags = 0;                   // No special flags
 
     if (sigaction(SIGVTALRM, &sa, NULL) == -1) {
-        perror("system error: sigaction failed");
+        fprintf(stderr, "system error: sigaction failed\n");
         exit(1);
-    }
+}
 }
 
 
@@ -81,7 +81,7 @@ static void arm_virtual_timer(void)
     timer.it_interval = timer.it_value;       /* same length as first quantum */
 
     if (setitimer(ITIMER_VIRTUAL, &timer, NULL) == -1) {
-        perror("system error: setitimer failed");
+        fprintf(stderr,"system error: setitimer failed");
         exit(1);
     }
 }
@@ -196,7 +196,17 @@ int uthread_spawn(thread_entry_point entry_point)
     sigset_t old;
     mask_sigvtalrm(&old);
 
-    if (!entry_point || MAX_THREAD_NUM <= num_threads) return -1;
+    if (entry_point == NULL) {
+        fprintf(stderr, "thread library error: entry_point is NULL\n");
+        unmask_sigvtalrm(&old);
+        return -1;
+
+    }
+    if (num_threads >= MAX_THREAD_NUM) {
+        fprintf(stderr, "thread library error: too many threads\n");
+        unmask_sigvtalrm(&old);
+        return -1;
+    }
         
 
     int availableId = -1;
@@ -235,9 +245,12 @@ int uthread_spawn(thread_entry_point entry_point)
 int uthread_terminate(int tid)
 {
 
-    //input validation
-    if (tid < 0 || tid >= MAX_THREAD_NUM || threads[tid].state == THREAD_UNUSED || threads[tid].state == THREAD_TERMINATED)
-    return -1;
+    if (tid < 0 || tid >= MAX_THREAD_NUM ||
+        threads[tid].state == THREAD_UNUSED ||
+        threads[tid].state == THREAD_TERMINATED) {
+        fprintf(stderr, "thread library error: invalid tid\n");
+        return -1;
+    }
    
 
 
@@ -320,8 +333,20 @@ int uthread_terminate(int tid)
 
 int uthread_block(int tid) {
 
-    /*main thread can't be blocked */
-    if (threads[tid].state == THREAD_UNUSED || tid==0) return -1;
+    /* input validation */
+    if (tid < 0 || tid >= MAX_THREAD_NUM) {
+        fprintf(stderr, "thread library error: invalid tid\n");
+        return -1;
+    }
+    if (tid == 0) {
+        fprintf(stderr, "thread library error: cannot block main thread\n");
+        return -1;
+    }
+    if (threads[tid].state == THREAD_UNUSED ||
+        threads[tid].state == THREAD_TERMINATED) {
+        fprintf(stderr, "thread library error: invalid tid\n");
+        return -1;
+    }
     
 
     sigset_t old;
@@ -349,12 +374,21 @@ int uthread_block(int tid) {
 
 int uthread_resume(int tid){
 
+    if (tid < 0 || tid >= MAX_THREAD_NUM) {
+        fprintf(stderr, "thread library error: invalid tid\n");
+        return -1;
+    }
+
     sigset_t old;
     mask_sigvtalrm(&old);
 
 
     if (threads[tid].state == THREAD_UNUSED ||
-      threads[tid].state == THREAD_TERMINATED) return -1;
+        threads[tid].state == THREAD_TERMINATED) {
+        fprintf(stderr, "thread library error: invalid tid\n");
+        unmask_sigvtalrm(&old);
+        return -1;
+    }
     
 
 
@@ -383,8 +417,12 @@ int uthread_sleep(int num_quantums){
     mask_sigvtalrm(&old);
 
 
-    //main thread cant sleep
-    if (current_tid == 0 || num_quantums <= 0) return -1;
+    /* main thread cannot sleep and num_quantums must be positive */
+    if (current_tid == 0 || num_quantums <= 0) {
+        fprintf(stderr, "thread library error: invalid sleep request\n");
+        unmask_sigvtalrm(&old);
+        return -1;
+    }
    
 
     //make it sleep until total quantums reaches a certain number
@@ -422,9 +460,13 @@ int uthread_get_total_quantums(){
 
 int uthread_get_quantums(int tid){
 
+    if (tid < 0 || tid >= MAX_THREAD_NUM ||
+    threads[tid].state == THREAD_UNUSED ||
+    threads[tid].state == THREAD_TERMINATED) {
+    fprintf(stderr, "thread library error: invalid tid\n");
+    return -1;
+    }
     return threads[tid].quantums;
-    
-
 
 }
 
@@ -538,13 +580,7 @@ void timer_handler(int signum){
 }
 
 
-// static void thread_launcher(void)
-// {
-//     thread_entry_point fn = threads[current_tid].entry;
-//     fn();                               /* run user code               */
-//     uthread_terminate(current_tid);     /* clean exit, never returns   */
-//     abort();                            /* defensive – should not run  */
-// }
+
 
 
 void setup_thread(int tid, char *stack, thread_entry_point entry_point){

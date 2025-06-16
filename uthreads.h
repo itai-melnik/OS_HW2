@@ -1,6 +1,5 @@
 #ifndef _UTHREADS_H
 #define _UTHREADS_H
-#define _POSIX_C_SOURCE 200809L 
 
 #include <stdlib.h>
 #include <signal.h>
@@ -19,8 +18,7 @@
 #define MAX_THREAD_NUM 100
 
 /** Stack size per thread (in bytes). */
-#define STACK_SIZE 0x2000
-# define SECOND 1000000 
+#define STACK_SIZE 4096
 
 /**
  * @brief Function pointer type for a thread's entry point.
